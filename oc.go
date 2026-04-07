@@ -2,8 +2,8 @@ package main
 
 import (
 	"database/sql"
-	_ "encoding/json"
-	_ "fmt"
+	"encoding/json"
+	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	"log"
 	_ "strings"
@@ -34,9 +34,51 @@ type Tbl struct {
 }
 
 func main() {
+
 	db, err := sql.Open("mysql", "root:root123@tcp(192.168.1.239:3306)/darsinurse?parseTime=true")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
+
+	rows, err := db.Query("SELECT * FROM `vitals-experiment`")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	var data []Tbl
+
+	for rows.Next() {
+		var tbl Tbl
+		if err := rows.Scan(
+			&tbl.ID,
+			&tbl.Emr_No,
+			&tbl.Pelayanan_id,
+			&tbl.Waktu,
+			&tbl.Heart_rate,
+			&tbl.Respirasi,
+			&tbl.Jarak_kasur_cm,
+			&tbl.Glukosa,
+			&tbl.Berat_badan_kg,
+			&tbl.Sistolik,
+			&tbl.Diastolik,
+			&tbl.Fall_detected,
+			&tbl.Tinggi_badan_cm,
+			&tbl.Bmi,
+			&tbl.Kolesterol,
+			&tbl.Asam_urat,
+			&tbl.Suhu,
+			&tbl.Spo2,
+		); err != nil {
+			log.Fatal(err)
+		}
+		data = append(data, tbl)
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(string(jsonData))
 }
