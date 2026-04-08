@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -17,7 +20,25 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
+
+type AnchorRecord struct {
+	CID       string `json:"cid"`
+	Timestamp int64  `json:"timestamp"`
+	KeyHash   string `json:"key_hash"`
+}
+
+type BesuClient struct {
+	client  *ethclient.Client
+	privKey *ecdsa.PrivateKey
+	from    common.Address
+	chainID *big.Int
+}
 
 type IPFSResponse struct {
 	Name string `json:"Name"`
@@ -49,6 +70,86 @@ type Tbl struct {
 type EncryptedData struct {
 	Nonce      string `json:"nonce"`
 	Ciphertext string `json:"ciphertext"`
+}
+
+func NewBesuClient(rpcURL, privateKeyHex string) (*BesuClient, error) {
+	client, err := ethclient.Dial(rpcURL)
+	if err != nil {
+		return nil, err
+	}
+
+	privKey, err := crypto.HexToECDSA(privateKeyHex)
+	if err != nil {
+		return nil, err
+	}
+
+	pubKey := privKey.Public()
+	pubKeyECDSA, ok := pubKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("publicKey is not of type *ecdsa.PublicKey")
+	}
+	from := crypto.PubkeyToAddress(*pubKeyECDSA)
+	chainID, err := client.ChainID(context.Background())
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &BesuClient{
+		client:  client,
+		privKey: privKey,
+		from:    from,
+		chainID: chainID,
+	}, nil
+}
+
+func (b *BesuClient) AnchorCID(cid string, keyHash string) (string, error) {
+	anchorData := AnchorRecord{
+		CID:       cid,
+		Timestamp: time.Now().Unix(),
+		KeyHash:   keyHash,
+	}
+
+	dataBytes, err := json.Marshal(anchorData)
+	if err != nil {
+		return "", err
+	}
+
+	nonce, err := b.client.PendingNonceAt(context.Background(), b.from)
+	if err != nil {
+		return "", err
+	}
+
+	gasPrice, err := b.client.SuggestGasPrice(context.Background())
+	if err != nil {
+		return "", err
+	}
+
+	tx := types.NewTransaction(
+		nonce,
+		b.from,
+		big.NewInt(0),
+		30000,
+		gasPrice,
+		dataBytes,
+	)
+
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(b.chainID), b.privKey)
+	if err != nil {
+		return "", err
+	}
+
+	err = b.client.SendTransaction(context.Background(), signedTx)
+	if err != nil {
+		return "", err
+	}
+
+	return signedTx.Hash().Hex(), nil
+}
+
+func (b *BesuClient) GetTransactionReceipt(txHash string) (*types.Receipt, error) {
+	hash := common.HexToHash(txHash)
+	return b.client.TransactionReceipt(context.Background(), hash)
 }
 
 func UploadToIPFS(data []byte) (string, error) {
@@ -197,7 +298,6 @@ func main() {
 	}
 
 	key := GenerateKey()
-
 	jsonData, err := json.Marshal(filtered)
 	if err != nil {
 		log.Fatal(err)
@@ -232,4 +332,23 @@ func main() {
 	fmt.Println("IPFS CID:", cid)
 	fmt.Println("IPFS URL:", GetIPFSURL(cid))
 
+	keyString := base64.StdEncoding.EncodeToString(key)
+	fmt.Println("Key:", keyString)
+
+	privateKey := "8f2a55949038a9610f50fb23b5883af3b4ecb3c3bb792cbcefbd1542c692be63"
+
+	besu, err := NewBesuClient("http://192.168.1.132:8545", privateKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	keyHash := crypto.Keccak256Hash([]byte(keyString)).Hex()
+	txHash, err := besu.AnchorCID(cid, keyHash)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("=== HYPERLEDGER BESU ANCHORING ===")
+	fmt.Println("Transaction Hash:", txHash)
+	fmt.Println("CID:", cid)
+	fmt.Println("Key Hash:", keyHash)
 }
