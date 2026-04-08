@@ -1,4 +1,4 @@
-APP_NAME := oc
+APP_NAME := sh
 GO := go
 GOFLAGS := -v
 LDFLAGS := -ldflags "-s -w"
