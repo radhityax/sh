@@ -1,37 +1,65 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
-	"time"
-
-	_ "github.com/go-sql-driver/mysql"
-
-	"bytes"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	"golang.org/x/crypto/argon2"
 )
+
+const usage = `Usage: 
+  sh
+  sh unlock <CID> <SALT_HEX>`
+
+const (
+	saltSize   = 16
+	timeCost   = 3
+	memoryCost = 1 * 1024
+	threads    = 1
+	keyLength  = 32
+)
+
+type AtomicResult struct {
+	CID      string
+	TxHash   string
+	DataHash string
+	KeyHash  string
+}
+
+type EncryptedData struct {
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
+	DataHash   string `json:"data_hash"`
+	AAD        string `json:"aad"`
+}
 
 type AnchorRecord struct {
 	CID       string `json:"cid"`
 	Timestamp int64  `json:"timestamp"`
+	DataHash  string `json:"data_hash"`
 	KeyHash   string `json:"key_hash"`
 }
 
@@ -69,11 +97,6 @@ type Tbl struct {
 	Spo2            int       `json:"spo2"`
 }
 
-type EncryptedData struct {
-	Nonce      string `json:"nonce"`
-	Ciphertext string `json:"ciphertext"`
-}
-
 func loadEnv() {
 	err := godotenv.Load()
 	if err != nil {
@@ -81,8 +104,33 @@ func loadEnv() {
 	}
 }
 
-func GetPrivateKey() string {
-	return os.Getenv("BESU_PRIVATE_KEY")
+func GenerateSalt() []byte {
+	salt := make([]byte, saltSize)
+	rand.Read(salt)
+	return salt
+}
+
+func DeriveKey(password string, salt []byte) []byte {
+	return argon2.IDKey([]byte(password), salt, timeCost, memoryCost, threads, keyLength)
+}
+
+func DeriveKeyFromEnv() ([]byte, []byte, error) {
+	password := os.Getenv("ENCRYPTION_PASSWORD")
+	if password == "" {
+		return nil, nil, fmt.Errorf("ENCRYPTION_PASSWORD not set")
+	}
+	salt := GenerateSalt()
+	key := DeriveKey(password, salt)
+	return key, salt, nil
+}
+
+func deriveKeyFromSaved(password string, salt []byte) []byte {
+	return argon2.IDKey([]byte(password), salt, timeCost, memoryCost, threads, keyLength)
+}
+
+func HashData(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 func GetBesuRPCURL() string {
@@ -91,6 +139,14 @@ func GetBesuRPCURL() string {
 		url = "http://192.168.1.132:8545"
 	}
 	return url
+}
+
+func GetDBDSN() string {
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		dsn = "root:root123@tcp(192.168.1.239:3306)/darsinurse?parseTime=true"
+	}
+	return dsn
 }
 
 func NewBesuClient(rpcURL, privateKeyHex string) (*BesuClient, error) {
@@ -111,7 +167,6 @@ func NewBesuClient(rpcURL, privateKeyHex string) (*BesuClient, error) {
 	}
 	from := crypto.PubkeyToAddress(*pubKeyECDSA)
 	chainID, err := client.ChainID(context.Background())
-
 	if err != nil {
 		return nil, err
 	}
@@ -124,10 +179,11 @@ func NewBesuClient(rpcURL, privateKeyHex string) (*BesuClient, error) {
 	}, nil
 }
 
-func (b *BesuClient) AnchorCID(cid string, keyHash string) (string, error) {
+func (b *BesuClient) AnchorCID(cid string, dataHash string, keyHash string) (string, error) {
 	anchorData := AnchorRecord{
 		CID:       cid,
 		Timestamp: time.Now().Unix(),
+		DataHash:  dataHash,
 		KeyHash:   keyHash,
 	}
 
@@ -150,7 +206,7 @@ func (b *BesuClient) AnchorCID(cid string, keyHash string) (string, error) {
 		nonce,
 		b.from,
 		big.NewInt(0),
-		30000,
+		300000,
 		gasPrice,
 		dataBytes,
 	)
@@ -207,16 +263,34 @@ func UploadToIPFS(data []byte) (string, error) {
 	return result.Hash, nil
 }
 
+func RetrieveFromIPFS(cid string) (*EncryptedData, error) {
+	url := "http://192.168.1.132:8080/ipfs/" + cid
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var encrypted EncryptedData
+	err = json.Unmarshal(body, &encrypted)
+	if err != nil {
+		return nil, err
+	}
+
+	return &encrypted, nil
+}
+
 func GetIPFSURL(hash string) string {
 	return "http://192.168.1.132:8080/ipfs/" + hash
 }
-func GenerateKey() []byte {
-	key := make([]byte, 32)
-	rand.Read(key)
-	return key
-}
 
-func EncryptAES256GCM(plaintext []byte, key []byte) (*EncryptedData, error) {
+func EncryptAES256GCM(plaintext []byte, key []byte, aad []byte) (*EncryptedData, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -232,11 +306,14 @@ func EncryptAES256GCM(plaintext []byte, key []byte) (*EncryptedData, error) {
 		return nil, err
 	}
 
-	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+	dataHash := HashData(plaintext)
+	ciphertext := gcm.Seal(nil, nonce, plaintext, aad)
 
 	return &EncryptedData{
 		Nonce:      base64.StdEncoding.EncodeToString(nonce),
 		Ciphertext: base64.StdEncoding.EncodeToString(ciphertext),
+		DataHash:   dataHash,
+		AAD:        base64.StdEncoding.EncodeToString(aad),
 	}, nil
 }
 
@@ -261,22 +338,102 @@ func DecryptAES256GCM(encrypted *EncryptedData, key []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	aad, err := base64.StdEncoding.DecodeString(encrypted.AAD)
 	if err != nil {
 		return nil, err
+	}
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
+	if err != nil {
+		return nil, err
+	}
+
+	if HashData(plaintext) != encrypted.DataHash {
+		return nil, fmt.Errorf("integrity check failed")
 	}
 
 	return plaintext, nil
 }
 
-func main() {
+func AtomicFlow(besu *BesuClient, data []byte, aad []byte, key []byte) (*AtomicResult, error) {
+	dataHash := HashData(data)
+
+	encrypted, err := EncryptAES256GCM(data, key, aad)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt error: %w", err)
+	}
+
+	encryptedJSON, _ := json.Marshal(encrypted)
+	cid, err := UploadToIPFS(encryptedJSON)
+	if err != nil {
+		return nil, fmt.Errorf("ipfs upload error: %w", err)
+	}
+
+	keyHash := HashData(key)
+	txHash, err := besu.AnchorCID(cid, dataHash, keyHash)
+	if err != nil {
+		return nil, fmt.Errorf("besu anchor error: %w", err)
+	}
+
+	return &AtomicResult{
+		CID:      cid,
+		TxHash:   txHash,
+		DataHash: dataHash,
+		KeyHash:  keyHash,
+	}, nil
+}
+
+func Unlock(cid string, saltHex string) ([]Tbl, error) {
+	password := os.Getenv("ENCRYPTION_PASSWORD")
+	if password == "" {
+		return nil, fmt.Errorf("ENCRYPTION_PASSWORD not set")
+	}
+
+	salt, err := hex.DecodeString(saltHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid salt: %w", err)
+	}
+
+	key := deriveKeyFromSaved(password, salt)
+
+	encrypted, err := RetrieveFromIPFS(cid)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve error: %w", err)
+	}
+
+	plaintext, err := DecryptAES256GCM(encrypted, key)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt error: %w", err)
+	}
+
+	var data []Tbl
+	err = json.Unmarshal(plaintext, &data)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal error: %w", err)
+	}
+
+	return data, nil
+}
+
+func runLock() {
 	loadEnv()
 
-	db, err := sql.Open("mysql", "root:root123@tcp(192.168.1.239:3306)/darsinurse?parseTime=true")
+	db, err := sql.Open("mysql", GetDBDSN())
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
+
+	key, salt, err := DeriveKeyFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Key derived (salt: %x)\n", salt)
+
+	besu, err := NewBesuClient(GetBesuRPCURL(), os.Getenv("BESU_PRIVATE_KEY"))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	rows, err := db.Query("SELECT * FROM `vitals-experiment`")
 	if err != nil {
@@ -320,59 +477,59 @@ func main() {
 		}
 	}
 
-	key := GenerateKey()
-	jsonData, err := json.Marshal(filtered)
+	aad := []byte(fmt.Sprintf("medical-record-%d-%d", filtered[0].ID, time.Now().Unix()))
+
+	filteredJSON, err := json.Marshal(filtered)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	encrypted, err := EncryptAES256GCM(jsonData, key)
+	result, err := AtomicFlow(besu, filteredJSON, aad, key)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Println("=== ENCRYPTED DATA ===")
-	encryptedJSON, _ := json.MarshalIndent(encrypted, "", "  ")
+	fmt.Println("=== LOCK SUCCESS ===")
+	fmt.Printf("CID:      %s\n", result.CID)
+	fmt.Printf("TxHash:   %s\n", result.TxHash)
+	fmt.Printf("DataHash: %s\n", result.DataHash)
+	fmt.Printf("KeyHash:  %s\n", result.KeyHash)
+	fmt.Printf("Salt:     %x\n", salt)
+}
 
-	cid, err := UploadToIPFS(encryptedJSON)
+func runUnlock(cid string, saltHex string) {
+	loadEnv()
+
+	data, err := Unlock(cid, saltHex)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Println(string(encryptedJSON))
+	fmt.Println("=== UNLOCK SUCCESS ===")
+	for _, d := range data {
+		fmt.Printf("ID: %d, EMR: %d, Waktu: %s\n", d.ID, d.Emr_No, d.Waktu.Format("2006-01-02 15:04:05"))
+		fmt.Printf("  Heart Rate: %d, Suhu: %.1f, SpO2: %d\n", d.Heart_rate, d.Suhu, d.Spo2)
+		fmt.Printf("  Berat: %.2f kg, BMI: %.2f\n", d.Berat_badan_kg, d.Bmi)
+		fmt.Println("---")
+	}
+}
 
-	decrypted, err := DecryptAES256GCM(encrypted, key)
-	if err != nil {
-		log.Fatal(err)
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		if len(os.Args) < 4 {
+			fmt.Println(usage)
+			os.Exit(1)
+		}
+		cid := os.Args[2]
+		saltHex := os.Args[3]
+		runUnlock(cid, saltHex)
+		return
 	}
 
-	fmt.Println("\n=== DECRYPTED DATA ===")
-	var decryptedData []Tbl
-	json.Unmarshal(decrypted, &decryptedData)
-	decryptedJSON, _ := json.MarshalIndent(decryptedData, "", "  ")
-	fmt.Println(string(decryptedJSON))
-
-	fmt.Println("IPFS CID:", cid)
-	fmt.Println("IPFS URL:", GetIPFSURL(cid))
-
-	keyString := base64.StdEncoding.EncodeToString(key)
-	fmt.Println("Key:", keyString)
-
-	privateKey := GetPrivateKey()
-	rpcURL := GetBesuRPCURL()
-
-	besu, err := NewBesuClient(rpcURL, privateKey)
-	if err != nil {
-		log.Fatal(err)
+	if len(os.Args) > 1 {
+		fmt.Println(usage)
+		os.Exit(1)
 	}
 
-	keyHash := crypto.Keccak256Hash([]byte(keyString)).Hex()
-	txHash, err := besu.AnchorCID(cid, keyHash)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("=== HYPERLEDGER BESU ANCHORING ===")
-	fmt.Println("Transaction Hash:", txHash)
-	fmt.Println("CID:", cid)
-	fmt.Println("Key Hash:", keyHash)
+	runLock()
 }
