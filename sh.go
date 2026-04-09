@@ -32,7 +32,10 @@ import (
 
 const usage = `Usage: 
   sh
-  sh unlock <CID> <SALT_HEX>`
+  sh unlock <CID> <SALT_HEX>
+  sh image <PATH>
+  sh image-unlock <CID> <SALT> <OUTPUT>
+  `
 
 const (
 	saltSize   = 16
@@ -489,12 +492,29 @@ func runLock() {
 		log.Fatal(err)
 	}
 
-	fmt.Println("=== LOCK SUCCESS ===")
-	fmt.Printf("CID:      %s\n", result.CID)
-	fmt.Printf("TxHash:   %s\n", result.TxHash)
-	fmt.Printf("DataHash: %s\n", result.DataHash)
-	fmt.Printf("KeyHash:  %s\n", result.KeyHash)
-	fmt.Printf("Salt:     %x\n", salt)
+	sqlite, err := InitSQLite("./benchmark_results.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sqlite.Close()
+
+	record := &MultiProtocolRecord{
+		SourceTable: "vitals-experiment",
+		SourceID:    int(filtered[0].ID),
+		Salt:        hex.EncodeToString(salt),
+		DataHash:    result.DataHash,
+		KeyHash:     result.KeyHash,
+		IPFSCID:     result.CID,
+		BesuTxHash:  result.TxHash,
+		CreatedAt:   time.Now(),
+	}
+
+	id, err := sqlite.InsertRecord(record)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("SQLite ID: %d\n", id)
 }
 
 func runUnlock(cid string, saltHex string) {
@@ -515,7 +535,12 @@ func runUnlock(cid string, saltHex string) {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+	if len(os.Args) < 2 {
+		fmt.Println(usage)
+		os.Exit(1)
+	}
+	switch os.Args[1] {
+	case "unlock":
 		if len(os.Args) < 4 {
 			fmt.Println(usage)
 			os.Exit(1)
@@ -523,13 +548,23 @@ func main() {
 		cid := os.Args[2]
 		saltHex := os.Args[3]
 		runUnlock(cid, saltHex)
-		return
+	case "image":
+		if len(os.Args) < 3 {
+			fmt.Println(usage)
+			os.Exit(1)
+		}
+		imagePath := os.Args[2]
+		RunLockImage(imagePath)
+	case "image-unlock":
+		if len(os.Args) < 5 {
+			fmt.Println(usage)
+			os.Exit(1)
+		}
+		cid := os.Args[2]
+		saltHex := os.Args[3]
+		outputPath := os.Args[4]
+		RunUnlockImage(cid, saltHex, outputPath)
+	default:
+		runLock()
 	}
-
-	if len(os.Args) > 1 {
-		fmt.Println(usage)
-		os.Exit(1)
-	}
-
-	runLock()
 }
