@@ -44,36 +44,10 @@ func InitSQLite(dbPath string) (*SQLiteDB, error) {
 	}
 
 	schema := `
-	CREATE TABLE IF NOT EXISTS image_records (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-	file_name TEXT NOT NULL,
-	file_type TEXT NOT NULL,
-	file_size INTEGER,
-	source_path TEXT,
-	salt TEXT NOT NULL,
-	data_hash TEXT NOT NULL,
-	key_hash TEXT NOT NULL,
-	ipfs_cid TEXT,
-	arweave_tx TEXT,
-	filecoin_cid TEXT,
-	besu_tx_hash TEXT,
-	encryption_time_ms INTEGER,
-	ipfs_time_ms INTEGER,
-	arweave_time_ms INTEGER,
-	filecoin_time_ms INTEGER,
-	besu_time_ms INTEGER,
-	concurrent_time_ms INTEGER,
-	total_time_ms INTEGER,
-	metadata TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_image_created ON image_records(created_at);
-CREATE INDEX IF NOT EXISTS idx_image_ipfs ON image_records(ipfs_cid);
-
 	CREATE TABLE IF NOT EXISTS multi_protocol_records (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, 
-		source_table TEXT DEFAULT 'virtals-experiment',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		source_table TEXT DEFAULT 'vitals-experiment',
 		source_id INTEGER NOT NULL,
 		salt TEXT NOT NULL,
 		data_hash TEXT NOT NULL,
@@ -91,9 +65,61 @@ CREATE INDEX IF NOT EXISTS idx_image_ipfs ON image_records(ipfs_cid);
 		total_time_ms INTEGER
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_created_at ON multi_protocol_records(created_at);
-	CREATE INDEX IF NOT EXISTS idx_source ON multi_protocol_records(source_id);
-	CREATE INDEX IF NOT EXISTS idx_ipfs ON multi_protocol_records(ipfs_cid);
+	CREATE TABLE IF NOT EXISTS image_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		file_name TEXT NOT NULL,
+		file_type TEXT NOT NULL,
+		file_size INTEGER,
+		source_path TEXT,
+		salt TEXT NOT NULL,
+		data_hash TEXT NOT NULL,
+		key_hash TEXT NOT NULL,
+		ipfs_cid TEXT,
+		arweave_tx TEXT,
+		filecoin_cid TEXT,
+		besu_tx_hash TEXT,
+		encryption_time_ms INTEGER,
+		ipfs_time_ms INTEGER,
+		arweave_time_ms INTEGER,
+		filecoin_time_ms INTEGER,
+		besu_time_ms INTEGER,
+		concurrent_time_ms INTEGER,
+		total_time_ms INTEGER,
+		metadata TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS video_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		file_name TEXT NOT NULL,
+		file_type TEXT NOT NULL,
+		file_size INTEGER,
+		source_path TEXT,
+		duration_seconds INTEGER,
+		salt TEXT NOT NULL,
+		data_hash TEXT NOT NULL,
+		key_hash TEXT NOT NULL,
+		ipfs_cid TEXT,
+		arweave_tx TEXT,
+		filecoin_cid TEXT,
+		besu_tx_hash TEXT,
+		encryption_time_ms INTEGER,
+		ipfs_time_ms INTEGER,
+		arweave_time_ms INTEGER,
+		filecoin_time_ms INTEGER,
+		besu_time_ms INTEGER,
+		concurrent_time_ms INTEGER,
+		total_time_ms INTEGER,
+		metadata TEXT
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_data_created ON multi_protocol_records(created_at);
+	CREATE INDEX IF NOT EXISTS idx_data_ipfs ON multi_protocol_records(ipfs_cid);
+	CREATE INDEX IF NOT EXISTS idx_image_created ON image_records(created_at);
+	CREATE INDEX IF NOT EXISTS idx_image_ipfs ON image_records(ipfs_cid);
+	CREATE INDEX IF NOT EXISTS idx_video_created ON video_records(created_at);
+	CREATE INDEX IF NOT EXISTS idx_video_ipfs ON video_records(ipfs_cid);
 	`
 
 	_, err = db.Exec(schema)

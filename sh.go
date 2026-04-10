@@ -31,11 +31,13 @@ import (
 )
 
 const usage = `Usage: 
-  sh
-  sh unlock <CID> <SALT_HEX>
-  sh image <PATH>
-  sh image-unlock <CID> <SALT> <OUTPUT>
-  `
+  sh                              - Lock data from MySQL
+  sh unlock <CID> <SALT_HEX>      - Unlock data from IPFS
+  sh image <PATH>                 - Lock image file
+  sh image-unlock <CID> <SALT> <OUTPUT> - Unlock image to output dir
+  sh video <PATH>                 - Lock video file
+  sh video-unlock <CID> <SALT> <OUTPUT> - Unlock video to output dir
+`
 
 const (
 	saltSize   = 16
@@ -564,6 +566,22 @@ func main() {
 		saltHex := os.Args[3]
 		outputPath := os.Args[4]
 		RunUnlockImage(cid, saltHex, outputPath)
+	case "video":
+		if len(os.Args) < 3 {
+			fmt.Println(usage)
+			os.Exit(1)
+		}
+		videoPath := os.Args[2]
+		RunLockVideo(videoPath)
+	case "video-unlock":
+		if len(os.Args) < 5 {
+			fmt.Println(usage)
+			os.Exit(1)
+		}
+		cid := os.Args[2]
+		saltHex := os.Args[3]
+		outputPath := os.Args[4]
+		RunUnlockVideo(cid, saltHex, outputPath)
 	default:
 		runLock()
 	}

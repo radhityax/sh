@@ -7,19 +7,19 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-type ImageRecord struct {
-	ID         int64
-	FileName   string
-	FileType   string /* "jpg", "png" */
-	FileSize   int64
-	SourcePath string
+type VideoRecord struct {
+	ID              int64
+	FileName        string
+	FileType        string
+	FileSize        int64
+	SourcePath      string
+	DurationSeconds int
 
 	Salt     string
 	DataHash string
@@ -29,8 +29,9 @@ type ImageRecord struct {
 	ArweaveTx   string
 	FilecoinCID string
 
-	BesuTxHash       string
-	Metadata         string
+	BesuTxHash string
+	Metadata   string
+
 	EncryptionTimeMs int
 	IPFSTimeMs       int
 	ArweaveTimeMs    int
@@ -38,55 +39,50 @@ type ImageRecord struct {
 	BesuTimeMs       int
 	ConcurrentTimeMs int
 	TotalTimeMs      int
-	CreatedAt        time.Time
+
+	CreatedAt time.Time
 }
 
-type EncryptedImage struct {
-	Nonce      string `json:"nonce"`
-	Ciphertext string `json:"ciphertext"`
-	DataHash   string `json:"data_hash"`
-	AAD        string `json:"aad"`
-	FileName   string `json:"file_name"`
-	FileType   string `json:"file_type"`
-	FileSize   int64  `json:"file_size"`
-	Metadata   string `json:"metadata"`
+type EncryptedVideo struct {
+	Nonce           string `json:"nonce"`
+	Ciphertext      string `json:"ciphertext"`
+	DataHash        string `json:"data_hash"`
+	AAD             string `json:"aad"`
+	FileName        string `json:"file_name"`
+	FileType        string `json:"file_type"`
+	FileSize        int64  `json:"file_size"`
+	DurationSeconds int    `json:"duration_seconds"`
+	Metadata        string `json:"metadata"`
 }
 
-func ReadImageFile(filePath string) ([]byte, string, int64, error) {
+func ReadVideoFile(filePath string) ([]byte, string, int64, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, "", 0, err
 	}
 	defer file.Close()
-
 	info, err := file.Stat()
 	if err != nil {
 		return nil, "", 0, err
 	}
-
 	fileSize := info.Size()
-
 	ext := filepath.Ext(filePath)
 	fileType := strings.TrimPrefix(ext, ".")
-	if fileType == "jpeg" {
-		fileType = "jpg"
+	if fileType == "mpeg" {
+		fileType = "mpg"
 	}
-
 	content, err := io.ReadAll(file)
 	if err != nil {
 		return nil, "", 0, err
 	}
-
 	return content, fileType, fileSize, nil
 }
-
-func EncryptImage(imageData []byte, fileName string, fileType string, fileSize int64, key []byte, aad []byte) (*EncryptedImage, error) {
-	encrypted, err := EncryptAES256GCM(imageData, key, aad)
+func EncryptVideo(videoData []byte, fileName string, fileType string, fileSize int64, key []byte, aad []byte) (*EncryptedVideo, error) {
+	encrypted, err := EncryptAES256GCM(videoData, key, aad)
 	if err != nil {
 		return nil, err
 	}
-
-	encryptedImage := &EncryptedImage{
+	encryptedVideo := &EncryptedVideo{
 		Nonce:      encrypted.Nonce,
 		Ciphertext: encrypted.Ciphertext,
 		DataHash:   encrypted.DataHash,
@@ -96,33 +92,30 @@ func EncryptImage(imageData []byte, fileName string, fileType string, fileSize i
 		FileSize:   fileSize,
 		Metadata:   fmt.Sprintf("%s|%s|%d", fileName, fileType, fileSize),
 	}
-
-	return encryptedImage, nil
+	return encryptedVideo, nil
 }
-
-func DecryptImage(encryptedImage *EncryptedImage, key []byte) ([]byte, error) {
+func DecryptVideo(encryptedVideo *EncryptedVideo, key []byte) ([]byte, error) {
 	decryptedData := &EncryptedData{
-		Nonce:      encryptedImage.Nonce,
-		Ciphertext: encryptedImage.Ciphertext,
-		DataHash:   encryptedImage.DataHash,
-		AAD:        encryptedImage.AAD,
+		Nonce:      encryptedVideo.Nonce,
+		Ciphertext: encryptedVideo.Ciphertext,
+		DataHash:   encryptedVideo.DataHash,
+		AAD:        encryptedVideo.AAD,
 	}
 	return DecryptAES256GCM(decryptedData, key)
 }
-
-func (s *SQLiteDB) InsertImageRecord(record *ImageRecord) (int64, error) {
+func (s *SQLiteDB) InsertVideoRecord(record *VideoRecord) (int64, error) {
 	query := `
-	INSERT INTO image_records (
-		file_name, file_type, file_size, source_path,
+	INSERT INTO video_records (
+		file_name, file_type, file_size, source_path, duration_seconds,
 		salt, data_hash, key_hash,
 		ipfs_cid, arweave_tx, filecoin_cid, besu_tx_hash,
 		encryption_time_ms, ipfs_time_ms, arweave_time_ms,
 		filecoin_time_ms, besu_time_ms, concurrent_time_ms, total_time_ms,
 		metadata
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := s.db.Exec(query,
-		record.FileName, record.FileType, record.FileSize, record.SourcePath,
+		record.FileName, record.FileType, record.FileSize, record.SourcePath, record.DurationSeconds,
 		record.Salt, record.DataHash, record.KeyHash,
 		record.IPFSCID, record.ArweaveTx, record.FilecoinCID, record.BesuTxHash,
 		record.EncryptionTimeMs, record.IPFSTimeMs, record.ArweaveTimeMs,
@@ -134,19 +127,19 @@ func (s *SQLiteDB) InsertImageRecord(record *ImageRecord) (int64, error) {
 	}
 	return result.LastInsertId()
 }
-func (s *SQLiteDB) GetImageRecordByID(id int64) (*ImageRecord, error) {
+func (s *SQLiteDB) GetVideoRecordByID(id int64) (*VideoRecord, error) {
 	query := `
-	SELECT id, file_name, file_type, file_size, source_path,
+	SELECT id, file_name, file_type, file_size, source_path, duration_seconds,
 		salt, data_hash, key_hash,
 		ipfs_cid, arweave_tx, filecoin_cid, besu_tx_hash,
 		encryption_time_ms, ipfs_time_ms, arweave_time_ms,
 		filecoin_time_ms, besu_time_ms, concurrent_time_ms, total_time_ms,
 		metadata, created_at
-	FROM image_records WHERE id = ?
+	FROM video_records WHERE id = ?
 	`
-	record := &ImageRecord{}
+	record := &VideoRecord{}
 	err := s.db.QueryRow(query, id).Scan(
-		&record.ID, &record.FileName, &record.FileType, &record.FileSize, &record.SourcePath,
+		&record.ID, &record.FileName, &record.FileType, &record.FileSize, &record.SourcePath, &record.DurationSeconds,
 		&record.Salt, &record.DataHash, &record.KeyHash,
 		&record.IPFSCID, &record.ArweaveTx, &record.FilecoinCID, &record.BesuTxHash,
 		&record.EncryptionTimeMs, &record.IPFSTimeMs, &record.ArweaveTimeMs,
@@ -155,26 +148,26 @@ func (s *SQLiteDB) GetImageRecordByID(id int64) (*ImageRecord, error) {
 	)
 	return record, err
 }
-func (s *SQLiteDB) GetAllImageRecords() ([]ImageRecord, error) {
+func (s *SQLiteDB) GetAllVideoRecords() ([]VideoRecord, error) {
 	query := `
-	SELECT id, file_name, file_type, file_size, source_path,
+	SELECT id, file_name, file_type, file_size, source_path, duration_seconds,
 		salt, data_hash, key_hash,
 		ipfs_cid, arweave_tx, filecoin_cid, besu_tx_hash,
 		encryption_time_ms, ipfs_time_ms, arweave_time_ms,
 		filecoin_time_ms, besu_time_ms, concurrent_time_ms, total_time_ms,
 		metadata, created_at
-	FROM image_records ORDER BY created_at DESC
+	FROM video_records ORDER BY created_at DESC
 	`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var records []ImageRecord
+	var records []VideoRecord
 	for rows.Next() {
-		var r ImageRecord
+		var r VideoRecord
 		err := rows.Scan(
-			&r.ID, &r.FileName, &r.FileType, &r.FileSize, &r.SourcePath,
+			&r.ID, &r.FileName, &r.FileType, &r.FileSize, &r.SourcePath, &r.DurationSeconds,
 			&r.Salt, &r.DataHash, &r.KeyHash,
 			&r.IPFSCID, &r.ArweaveTx, &r.FilecoinCID, &r.BesuTxHash,
 			&r.EncryptionTimeMs, &r.IPFSTimeMs, &r.ArweaveTimeMs,
@@ -188,27 +181,27 @@ func (s *SQLiteDB) GetAllImageRecords() ([]ImageRecord, error) {
 	}
 	return records, nil
 }
-func ProcessImageFile(imagePath string, besu *BesuClient, sqlite *SQLiteDB) (*ImageRecord, error) {
+func ProcessVideoFile(videoPath string, besu *BesuClient, sqlite *SQLiteDB) (*VideoRecord, error) {
 	startTime := time.Now()
-	imageData, fileType, fileSize, err := ReadImageFile(imagePath)
+	videoData, fileType, fileSize, err := ReadVideoFile(videoPath)
 	if err != nil {
-		return nil, fmt.Errorf("read image error: %w", err)
+		return nil, fmt.Errorf("read video error: %w", err)
 	}
-	fileName := filepath.Base(imagePath)
+	fileName := filepath.Base(videoPath)
 	key, salt, err := DeriveKeyFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("key derivation error: %w", err)
 	}
-	aad := []byte(fmt.Sprintf("image-%s-%d", fileName, time.Now().Unix()))
+	aad := []byte(fmt.Sprintf("video-%s-%d", fileName, time.Now().Unix()))
 	encryptStart := time.Now()
-	encryptedImage, err := EncryptImage(imageData, fileName, fileType, fileSize, key, aad)
+	encryptedVideo, err := EncryptVideo(videoData, fileName, fileType, fileSize, key, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt error: %w", err)
 	}
 	encryptTime := time.Since(encryptStart).Milliseconds()
-	encryptedJSON, _ := json.Marshal(encryptedImage)
+	encryptedJSON, _ := json.Marshal(encryptedVideo)
 	encodedData := base64.StdEncoding.EncodeToString(encryptedJSON)
-	dataHash := HashData(imageData)
+	dataHash := HashData(videoData)
 	ipfsStart := time.Now()
 	ipfsCID, err := UploadToIPFS([]byte(encodedData))
 	if err != nil {
@@ -225,17 +218,17 @@ func ProcessImageFile(imagePath string, besu *BesuClient, sqlite *SQLiteDB) (*Im
 	}
 	besuTime := time.Since(anchorStart).Milliseconds()
 	totalTime := time.Since(startTime).Milliseconds()
-	record := &ImageRecord{
+	record := &VideoRecord{
 		FileName:         fileName,
 		FileType:         fileType,
 		FileSize:         fileSize,
-		SourcePath:       imagePath,
+		SourcePath:       videoPath,
 		Salt:             hex.EncodeToString(salt),
 		DataHash:         dataHash,
 		KeyHash:          keyHash,
 		IPFSCID:          ipfsCID,
 		BesuTxHash:       txHash,
-		Metadata:         encryptedImage.Metadata,
+		Metadata:         encryptedVideo.Metadata,
 		EncryptionTimeMs: int(encryptTime),
 		IPFSTimeMs:       int(ipfsTime),
 		ArweaveTimeMs:    int(arweaveTime),
@@ -244,65 +237,44 @@ func ProcessImageFile(imagePath string, besu *BesuClient, sqlite *SQLiteDB) (*Im
 		TotalTimeMs:      int(totalTime),
 		CreatedAt:        time.Now(),
 	}
-	id, err := sqlite.InsertImageRecord(record)
+	id, err := sqlite.InsertVideoRecord(record)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite error: %w", err)
 	}
 	record.ID = id
 	return record, nil
 }
-func RetrieveRawFromIPFS(cid string) ([]byte, error) {
-	url := "http://192.168.1.132:8080/ipfs/" + cid
 
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	return body, nil
-}
-
-func RetrieveImageFromIPFS(cid string, key []byte, outputPath string) (*ImageRecord, error) {
+func RetrieveVideoFromIPFS(cid string, key []byte, outputPath string) (*VideoRecord, error) {
 	rawContent, err := RetrieveRawFromIPFS(cid)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve error: %w", err)
 	}
-
 	encryptedJSON, err := base64.StdEncoding.DecodeString(string(rawContent))
 	if err != nil {
 		return nil, fmt.Errorf("decode error: %w", err)
 	}
-
-	var encryptedImage EncryptedImage
-	err = json.Unmarshal(encryptedJSON, &encryptedImage)
+	var encryptedVideo EncryptedVideo
+	err = json.Unmarshal(encryptedJSON, &encryptedVideo)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
-
-	imageData, err := DecryptImage(&encryptedImage, key)
+	videoData, err := DecryptVideo(&encryptedVideo, key)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt error: %w", err)
 	}
-
-	outputFileName := filepath.Join(outputPath, encryptedImage.FileName)
-	err = os.WriteFile(outputFileName, imageData, 0644)
+	outputFileName := filepath.Join(outputPath, encryptedVideo.FileName)
+	err = os.WriteFile(outputFileName, videoData, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("write error: %w", err)
 	}
-
-	return &ImageRecord{
-		FileName: encryptedImage.FileName,
-		FileType: encryptedImage.FileType,
-		FileSize: encryptedImage.FileSize,
+	return &VideoRecord{
+		FileName: encryptedVideo.FileName,
+		FileType: encryptedVideo.FileType,
+		FileSize: encryptedVideo.FileSize,
 	}, nil
 }
-func RunLockImage(imagePath string) {
+func RunLockVideo(videoPath string) {
 	loadEnv()
 
 	sqlite, err := InitSQLite("./benchmark_results.db")
@@ -314,11 +286,11 @@ func RunLockImage(imagePath string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	record, err := ProcessImageFile(imagePath, besu, sqlite)
+	record, err := ProcessVideoFile(videoPath, besu, sqlite)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Lock <3")
+	fmt.Println("Video lock <3")
 	fmt.Printf("File: %s\n", record.FileName)
 	fmt.Printf("Type: %s\n", record.FileType)
 	fmt.Printf("Size: %d bytes\n", record.FileSize)
@@ -331,15 +303,15 @@ func RunLockImage(imagePath string) {
 	fmt.Printf("Besu Anchor: %d ms\n", record.BesuTimeMs)
 	fmt.Printf("Total: %d ms\n", record.TotalTimeMs)
 }
-func RunUnlockImage(cid string, saltHex string, outputPath string) {
+func RunUnlockVideo(cid string, saltHex string, outputPath string) {
 	loadEnv()
 	password := os.Getenv("ENCRYPTION_PASSWORD")
 	salt, _ := hex.DecodeString(saltHex)
 	key := deriveKeyFromSaved(password, salt)
-	_, err := RetrieveImageFromIPFS(cid, key, outputPath)
+	_, err := RetrieveVideoFromIPFS(cid, key, outputPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Unlock <3")
+	fmt.Println("video unlock <3")
 	fmt.Printf("Output: %s\n", outputPath)
 }

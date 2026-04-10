@@ -69,7 +69,7 @@ vet: deps
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f coverage.out coverage.html
-
+	rm -f benchmark_results.db 
 .PHONY: install
 install: deps
 	$(GO) install .
